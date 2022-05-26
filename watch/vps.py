@@ -4,19 +4,29 @@ import time
 import re
 import os
 import configparser
-abspath = os.getcwd()
+session = requests.session()
+abspath =os.path.abspath(__file__).replace(f'/{os.path.basename(__file__)}','')
 config = configparser.ConfigParser()
 config.read(f'{abspath}/conf.ini')
 
 
 
-VPS_SERVICE_USERNAME = config['all']['VPS_SERVICE_USERNAME']
-VPS_SERVICE_PASSWORD = config['all']['VPS_SERVICE_PASSWORD']
-VPS_SERVICE_HOST = config['all']['VPS_SERVICE_HOST']
-VPS_SERVICE_PORT = config['all']['VPS_SERVICE_PORT']
 
-
-
+PROXY_SERVICE_HOST =config['PROXY']['PROXY_SERVICE_HOST']
+PROXY_SERVICE_PORT =config['PROXY']['PROXY_SERVICE_PORT']
+PROXY_AGENT_HOST =config['PROXY']['PROXY_AGENT_HOST']
+PROXY_AGENT_PORT =config['PROXY']['PROXY_AGENT_PORT']
+PROXY_API_HOST =config['PROXY']['PROXY_API_HOST']
+PROXY_API_PORT =config['PROXY']['PROXY_API_PORT']
+VPS_PORT =config['PROXY']['VPS_PORT']
+REDIS_HOST=config['REDIS']['REDIS_HOST']
+REDIS_PORT=config['REDIS']['REDIS_PORT']
+REDIS_DB =config['REDIS']['REDIS_DB']
+REDIS_PASS=config['REDIS']['REDIS_PASS']
+TUNNEL_NGINX_PORT =config['TUNNEL']['TUNNEL_NGINX_PORT']
+TUNNEL_SQUID_HOST =config['TUNNEL']['TUNNEL_SQUID_HOST']
+TUNNEL_SQUID_PORT =config['TUNNEL']['TUNNEL_SQUID_PORT']
+TUNNEL_KEYS = config['TUNNEL']['TUNNEL_KEYS']
 
 SQUID_AUTH_CONFIG =r'''
 import sys
@@ -24,7 +34,7 @@ import json
 import urllib.request
 def matchpasswd(username, password, client_ip, local_ip):
     try:
-        req = urllib.request.Request(url=f'http://{{SERVICE_HOST}}:{{SERVICE_PORT}}/auth_for_vps?username={username}&password={password}&client_ip={client_ip}', method='POST')
+        req = urllib.request.Request(url=f'http://{{PROXY_API_HOST}}:{{PROXY_API_PORT}}/auth_for_vps?username={username}&password={password}&client_ip={client_ip}', method='GET')
         res = json.loads(urllib.request.urlopen(req).read())
         if res:
             return True
@@ -41,13 +51,12 @@ if __name__ == '__main__':
         else:  
             sys.stdout.write('ERR\n')  
         sys.stdout.flush()  
-'''.replace('{{SERVICE_HOST}}',)
+'''.replace('{{PROXY_API_HOST}}',PROXY_API_HOST).replace('{{PROXY_API_PORT}}',PROXY_API_PORT)
 
 
 
 
 VPS_SQUID_CONFIG=r'''
-acl safehost src {{SERVICE_HOST}}
 acl localnet src 10.0.0.0/8
 acl localnet src 172.16.0.0/12
 acl localnet src 192.168.0.0/16
@@ -65,7 +74,7 @@ acl Safe_ports port 488
 acl Safe_ports port 591
 acl Safe_ports port 777
 acl CONNECT method CONNECT
-http_port {{PROXY_PORT}}
+http_port {{VPS_PORT}}
 auth_param basic program /usr/bin/python3 /etc/squid/squid_auth.py
 auth_param basic key_extras "%>a %la"
 auth_param basic credentialsttl 1 second
@@ -73,14 +82,13 @@ auth_param basic children 1000
 auth_param basic casesensitive on
 acl auth_users proxy_auth REQUIRED
 http_access allow auth_users
-http_access allow safehost
 http_access deny all
 refresh_pattern ^ftp:  1440 20% 10080
 refresh_pattern ^gopher: 1440 0% 1440
 refresh_pattern -i (/cgi-bin/|\?) 0 0% 0
 refresh_pattern .  0 20% 4320
 visible_hostname proxy
-'''
+'''.replace('{{VPS_PORT}}',VPS_PORT)
 
        
 TUNNEL_NGINX_CONFIG=r'''
@@ -111,10 +119,10 @@ stream {
         preread_by_lua_block{
             local redis = require("resty.redis")
             local redis_instance = redis:new()
-            {{REDIS_CONNECT}}
+            local ok, err = redis_instance:connect("{{REDIS_HOST}}","{{REDIS_PORT}}")
             {{REDIS_PASS}}
             local res, err = redis_instance:select({{REDIS_DB}})
-            local res, err = redis_instance:keys("proxy_*")
+            local res, err = redis_instance:keys("{{TUNNEL_KEYS}}")
             local postion = math.random(#res)
             local proxy_ip,err = redis_instance:get(res[postion])
             ngx.ctx.proxy_host = string.match(proxy_ip,"%d+.%d+.%d+.%d+")
@@ -128,7 +136,14 @@ stream {
         proxy_pass backend;
     }
 }
-'''
+'''.replace('{{TUNNEL_KEYS}}',TUNNEL_KEYS).replace('{{REDIS_DB}}',REDIS_DB).replace('{{TUNNEL_NGINX_PORT}}',TUNNEL_NGINX_PORT).replace('{{REDIS_HOST}}',REDIS_HOST).replace('{{REDIS_PORT}}',REDIS_PORT)
+
+if REDIS_PASS:
+    TUNNEL_NGINX_CONFIG=TUNNEL_NGINX_CONFIG.replace('{{REDIS_PASS}}',f'local res, err = redis_instance:auth("{REDIS_PASS}")')
+else:
+    TUNNEL_NGINX_CONFIG=TUNNEL_NGINX_CONFIG.replace('{{REDIS_PASS}}','')
+
+
 
 TUUNEL_SQUID_CONFIG =r'''
 acl localnet src 10.0.0.0/8
@@ -163,7 +178,7 @@ refresh_pattern ^gopher: 1440 0% 1440
 refresh_pattern -i (/cgi-bin/|\?) 0 0% 0
 refresh_pattern .  0 20% 4320
 visible_hostname proxy
-'''
+'''.replace('{{TUNNEL_SQUID_PORT}}',TUNNEL_SQUID_PORT).replace('{{TUNNEL_NGINX_PORT}}',TUNNEL_NGINX_PORT)
 
 
 
@@ -173,13 +188,12 @@ class VpsService:
         封装通过ssh协议，控制拨号机的方法
         vps_id为拨号机的配置信息
     '''
-    def __init__(self,vps_uuid) -> None:
+    def __init__(self,vps_conf) -> None:
         '''
             vps_id 拨号机id
         '''
         self.ssh = None
-        self.vps_uuid = vps_uuid
-        self._get_vpsconfig()
+        self.vps_conf = vps_conf
         self.connect()
         
         
@@ -191,16 +205,7 @@ class VpsService:
     def __enter__(self):
         return self
 
-    def _get_vpsconfig(self):
-        self.vps_config = {
-            'id':1,
-            'host':'10.120.66.180',
-            'port':'22',
-            'user':'root',
-            'password':'tpi@66.180',
-            'env_is_ok':True,
-        }
-
+    
     def close(self):
         try:
             self.ssh.close()
@@ -244,6 +249,9 @@ class VpsService:
             fileObject.close()
             self.ssh.exec_command('systemctl stop squid')
             self.ssh.exec_command('systemctl start squid')
+            self.close()
+        else:
+            raise ValueError('ssh 无法建立连接')
 
     
     def dia(self):
@@ -274,14 +282,27 @@ class VpsService:
                     break
                 pppoe_ip = re.findall(r"inet.(\d+.\d+.\d+.\d+)", result)
                 if pppoe_ip:
-                    self.ssh.close()
+                    self.close()
                     # logger.info(f'{self.vps["owner"]}_{self.vps["id"]} 关闭ssh连接')
                     # logger.info(f'{self.vps["owner"]}_{self.vps["id"]} 获取到 {pppoe_ip[0]}')
                     return pppoe_ip[0]
                 continue
     
-    def monitor(self):
-        pass
+    def watch(self):
+        self.mem_info()
+        self.cpu_info()
+        self.ionetwork()
+        self.close()
+        return {
+            'MemTotal':self.MemTotal,
+            'MemFree':self.MemFree,
+            'MemAvailable':self.MemAvailable,
+            'cpu_user':self.cpu_user,
+            'cpu_sys':self.cpu_sys,
+            'cpu_idle':self.cpu_idle,
+            'eth0_Receive':self.eth0_Receive,
+            'eth0_Transmit':self.eth0_Transmit
+        }
     
 
     def mem_info(self):

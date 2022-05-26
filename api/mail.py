@@ -1,7 +1,7 @@
 import smtplib
 import os
 import configparser
-abspath = os.getcwd()
+abspath =os.path.abspath(__file__).replace(f'/{os.path.basename(__file__)}','')
 config = configparser.ConfigParser()
 config.read(f'{abspath}/conf.ini')
 EMAIL_HOST_USER = config['EMAIL']['EMAIL_HOST_USER']
