@@ -4,31 +4,30 @@ import time
 import re
 import os
 import configparser
+
 session = requests.session()
-abspath =os.path.abspath(__file__).replace(f'/{os.path.basename(__file__)}','')
+abspath = os.path.abspath(__file__).replace(f"/{os.path.basename(__file__)}", "")
 config = configparser.ConfigParser()
-config.read(f'{abspath}/conf.ini')
+config.read(f"{abspath}/conf.ini")
 
 
+PROXY_SERVICE_HOST = config["PROXY"]["PROXY_SERVICE_HOST"]
+PROXY_SERVICE_PORT = config["PROXY"]["PROXY_SERVICE_PORT"]
+PROXY_AGENT_HOST = config["PROXY"]["PROXY_AGENT_HOST"]
+PROXY_AGENT_PORT = config["PROXY"]["PROXY_AGENT_PORT"]
+PROXY_API_HOST = config["PROXY"]["PROXY_API_HOST"]
+PROXY_API_PORT = config["PROXY"]["PROXY_API_PORT"]
+VPS_PORT = config["VPS"]["VPS_PORT"]
+REDIS_HOST = config["REDIS"]["REDIS_HOST"]
+REDIS_PORT = config["REDIS"]["REDIS_PORT"]
+REDIS_DB = config["REDIS"]["REDIS_DB"]
+REDIS_PASS = config["REDIS"]["REDIS_PASS"]
+TUNNEL_NGINX_PORT = config["TUNNEL"]["TUNNEL_NGINX_PORT"]
+TUNNEL_SQUID_HOST = config["TUNNEL"]["TUNNEL_SQUID_HOST"]
+TUNNEL_SQUID_PORT = config["TUNNEL"]["TUNNEL_SQUID_PORT"]
 
 
-PROXY_SERVICE_HOST =config['PROXY']['PROXY_SERVICE_HOST']
-PROXY_SERVICE_PORT =config['PROXY']['PROXY_SERVICE_PORT']
-PROXY_AGENT_HOST =config['PROXY']['PROXY_AGENT_HOST']
-PROXY_AGENT_PORT =config['PROXY']['PROXY_AGENT_PORT']
-PROXY_API_HOST =config['PROXY']['PROXY_API_HOST']
-PROXY_API_PORT =config['PROXY']['PROXY_API_PORT']
-VPS_PORT =config['VPS']['VPS_PORT']
-REDIS_HOST=config['REDIS']['REDIS_HOST']
-REDIS_PORT=config['REDIS']['REDIS_PORT']
-REDIS_DB =config['REDIS']['REDIS_DB']
-REDIS_PASS=config['REDIS']['REDIS_PASS']
-TUNNEL_NGINX_PORT =config['TUNNEL']['TUNNEL_NGINX_PORT']
-TUNNEL_SQUID_HOST =config['TUNNEL']['TUNNEL_SQUID_HOST']
-TUNNEL_SQUID_PORT =config['TUNNEL']['TUNNEL_SQUID_PORT']
-
-
-SQUID_AUTH_CONFIG =r'''
+SQUID_AUTH_CONFIG = r"""
 import sys
 import json
 import urllib.request
@@ -42,21 +41,23 @@ def matchpasswd(username, password, client_ip, local_ip):
             return False
     except:
         return False
-if __name__ == '__main__':  
-    while True:  
-        line = sys.stdin.readline()  
-        username, password, client_ip, local_ip = line.split()  
-        if matchpasswd(username, password, client_ip, local_ip):  
-            sys.stdout.write('OK\n')  
-        else:  
-            sys.stdout.write('ERR\n')  
-        sys.stdout.flush()  
-'''.replace('{{PROXY_API_HOST}}',PROXY_API_HOST).replace('{{PROXY_API_PORT}}',PROXY_API_PORT)
+if __name__ == '__main__':
+    while True:
+        line = sys.stdin.readline()
+        username, password, client_ip, local_ip = line.split()
+        if matchpasswd(username, password, client_ip, local_ip):
+            sys.stdout.write('OK\n')
+        else:
+            sys.stdout.write('ERR\n')
+        sys.stdout.flush()
+""".replace(
+    "{{PROXY_API_HOST}}", PROXY_API_HOST
+).replace(
+    "{{PROXY_API_PORT}}", PROXY_API_PORT
+)
 
 
-
-
-VPS_SQUID_CONFIG=r'''
+VPS_SQUID_CONFIG = r"""
 acl localnet src 10.0.0.0/8
 acl localnet src 172.16.0.0/12
 acl localnet src 192.168.0.0/16
@@ -88,12 +89,15 @@ refresh_pattern ^gopher: 1440 0% 1440
 refresh_pattern -i (/cgi-bin/|\?) 0 0% 0
 refresh_pattern .  0 20% 4320
 visible_hostname proxy
-'''.replace('{{VPS_PORT}}',VPS_PORT)
+""".replace(
+    "{{VPS_PORT}}", VPS_PORT
+)
 
-       
-TUNNEL_NGINX_CONFIG=r'''
-worker_processes  8;        
-error_log /var/log/nginx/error.log warn;  
+
+TUNNEL_NGINX_CONFIG = (
+    r"""
+worker_processes  8;
+error_log /var/log/nginx/error.log warn;
 events {
     worker_connections 1024;
 }
@@ -136,16 +140,23 @@ stream {
         proxy_pass backend;
     }
 }
-'''.replace('{{REDIS_DB}}',REDIS_DB).replace('{{TUNNEL_NGINX_PORT}}',TUNNEL_NGINX_PORT).replace('{{REDIS_HOST}}',REDIS_HOST).replace('{{REDIS_PORT}}',REDIS_PORT)
+""".replace(
+        "{{REDIS_DB}}", REDIS_DB
+    )
+    .replace("{{TUNNEL_NGINX_PORT}}", TUNNEL_NGINX_PORT)
+    .replace("{{REDIS_HOST}}", REDIS_HOST)
+    .replace("{{REDIS_PORT}}", REDIS_PORT)
+)
 
 if REDIS_PASS:
-    TUNNEL_NGINX_CONFIG=TUNNEL_NGINX_CONFIG.replace('{{REDIS_PASS}}',f'local res, err = redis_instance:auth("{REDIS_PASS}")')
+    TUNNEL_NGINX_CONFIG = TUNNEL_NGINX_CONFIG.replace(
+        "{{REDIS_PASS}}", f'local res, err = redis_instance:auth("{REDIS_PASS}")'
+    )
 else:
-    TUNNEL_NGINX_CONFIG=TUNNEL_NGINX_CONFIG.replace('{{REDIS_PASS}}','')
+    TUNNEL_NGINX_CONFIG = TUNNEL_NGINX_CONFIG.replace("{{REDIS_PASS}}", "")
 
 
-
-TUUNEL_SQUID_CONFIG =r'''
+TUUNEL_SQUID_CONFIG = r"""
 acl localnet src 10.0.0.0/8
 acl localnet src 172.16.0.0/12
 acl localnet src 192.168.0.0/16
@@ -178,42 +189,42 @@ refresh_pattern ^gopher: 1440 0% 1440
 refresh_pattern -i (/cgi-bin/|\?) 0 0% 0
 refresh_pattern .  0 20% 4320
 visible_hostname proxy
-'''.replace('{{TUNNEL_SQUID_PORT}}',TUNNEL_SQUID_PORT).replace('{{TUNNEL_NGINX_PORT}}',TUNNEL_NGINX_PORT)
-
-
+""".replace(
+    "{{TUNNEL_SQUID_PORT}}", TUNNEL_SQUID_PORT
+).replace(
+    "{{TUNNEL_NGINX_PORT}}", TUNNEL_NGINX_PORT
+)
 
 
 class VpsService:
-    '''
+    """
         封装通过ssh协议，控制拨号机的方法
         vps_id为拨号机的配置信息
-    '''
-    def __init__(self,vps_uuid) -> None:
-        '''
+    """
+
+    def __init__(self, vps_uuid) -> None:
+        """
             vps_id 拨号机id
-        '''
+        """
         self.ssh = None
         self.vps_uuid = vps_uuid
         self._get_vpsconfig()
         self.connect()
-        
-        
-  
-    def __exit__(self,exc_type, exc_val, exc_tb):
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
-        
-        
+
     def __enter__(self):
         return self
 
     def _get_vpsconfig(self):
         self.vps_config = {
-            'id':1,
-            'host':'10.120.66.180',
-            'port':'22',
-            'user':'root',
-            'password':'tpi@66.180',
-            'env_is_ok':True,
+            "id": 1,
+            "host": "10.120.66.180",
+            "port": "22",
+            "user": "root",
+            "password": "tpi@66.180",
+            "env_is_ok": True,
         }
 
     def close(self):
@@ -222,52 +233,51 @@ class VpsService:
         except:
             pass
 
-    
-    
     def connect(self):
-        '''
+        """
             hostname:主机ip，或者主机名
             port：登陆端口
             username：用户
             password：密码
             通过ssh进行连接，登录拨号机
-            
-        '''
+
+        """
         self.ssh = paramiko.SSHClient()
         self.ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         self.ssh.connect(
-            hostname=self.vps_config["host"], port=self.vps_config["port"], username=self.vps_config["user"], password=self.vps_config["password"]
+            hostname=self.vps_config["host"],
+            port=self.vps_config["port"],
+            username=self.vps_config["user"],
+            password=self.vps_config["password"],
         )
-        
 
     def deployment(self) -> bool:
         if self.ssh:
-            cmd_list =[
-                'yum install python36 -y',
-                'yum install squid -y',
-                'rm -f /etc/squid/squid.conf',
-                'rm -f /etc/squid/squid_auth.py'
+            cmd_list = [
+                "yum install python36 -y",
+                "yum install squid -y",
+                "rm -f /etc/squid/squid.conf",
+                "rm -f /etc/squid/squid_auth.py",
             ]
             for cmd_ in cmd_list:
                 self.ssh.exec_command(cmd_)
             sftp = self.ssh.open_sftp()
-            fileObject = sftp.open('/etc/squid/squid.conf','w')
+            fileObject = sftp.open("/etc/squid/squid.conf", "w")
             fileObject.write(VPS_SQUID_CONFIG)
             fileObject.close()
-            fileObject = sftp.open('/etc/squid/squid_auth.py','w')
+            fileObject = sftp.open("/etc/squid/squid_auth.py", "w")
             fileObject.write(SQUID_AUTH_CONFIG)
             fileObject.close()
-            self.ssh.exec_command('systemctl stop squid')
-            self.ssh.exec_command('systemctl start squid')
+            self.ssh.exec_command("systemctl stop squid")
+            self.ssh.exec_command("systemctl start squid")
             self.close()
         else:
-            raise ValueError('ssh 无法建立连接')
+            raise ValueError("ssh 无法建立连接")
 
-    
     def dia(self):
-        '''
+        """
             负责拨号，将获取到的ip返回
-        '''
+        """
         if self.ssh:
             while True:
                 self.ssh.exec_command("pppoe-stop")
@@ -285,7 +295,10 @@ class VpsService:
                     except Exception as e:
                         # logger.error(f'{self.vps["owner"]}_{self.vps["id"]}:{e}')
                         return None
-                    res, err = stdout.read().decode('utf-8'), stderr.read().decode('utf-8')
+                    res, err = (
+                        stdout.read().decode("utf-8"),
+                        stderr.read().decode("utf-8"),
+                    )
                     result = res if res else err
                     if "Link is down" in res:
                         continue
@@ -297,87 +310,85 @@ class VpsService:
                     # logger.info(f'{self.vps["owner"]}_{self.vps["id"]} 获取到 {pppoe_ip[0]}')
                     return pppoe_ip[0]
                 continue
-    
+
     def watch(self):
         try:
             self.mem_info()
             self.cpu_info()
             self.ionetwork()
             return {
-                'alive':True,
-                'MemTotal':self.MemTotal,
-                'MemFree':self.MemFree,
-                'MemAvailable':self.MemAvailable,
-                'cpu_user':self.cpu_user,
-                'cpu_sys':self.cpu_sys,
-                'cpu_idle':self.cpu_idle,
-                'eth0_Receive':self.eth0_Receive,
-                'eth0_Transmit':self.eth0_Transmit
+                "alive": True,
+                "MemTotal": self.MemTotal,
+                "MemFree": self.MemFree,
+                "MemAvailable": self.MemAvailable,
+                "cpu_user": self.cpu_user,
+                "cpu_sys": self.cpu_sys,
+                "cpu_idle": self.cpu_idle,
+                "eth0_Receive": self.eth0_Receive,
+                "eth0_Transmit": self.eth0_Transmit,
             }
         except:
             return {
-                'alive':False,
-                'MemTotal':self.MemTotal,
-                'MemFree':self.MemFree,
-                'MemAvailable':self.MemAvailable,
-                'cpu_user':self.cpu_user,
-                'cpu_sys':self.cpu_sys,
-                'cpu_idle':self.cpu_idle,
-                'eth0_Receive':self.eth0_Receive,
-                'eth0_Transmit':self.eth0_Transmit
+                "alive": False,
+                "MemTotal": self.MemTotal,
+                "MemFree": self.MemFree,
+                "MemAvailable": self.MemAvailable,
+                "cpu_user": self.cpu_user,
+                "cpu_sys": self.cpu_sys,
+                "cpu_idle": self.cpu_idle,
+                "eth0_Receive": self.eth0_Receive,
+                "eth0_Transmit": self.eth0_Transmit,
             }
         finally:
             self.close()
-        
-
-    
 
     def mem_info(self):
-        '''
+        """
             MemTotal 总量
             MemFree 可用
             MemAvailable 剩余
-        '''
+        """
         if self.ssh:
-            stdout = self.ssh.exec_command("cat /proc/meminfo",)[1]
-            self.MemTotal,self.MemFree,self.MemAvailable = re.findall(r'MemTotal.\s+(\d+)\skB\nMemFree.\s+(\d+)\skB\nMemAvailable.\s+(\d+)\skB\n',stdout.read().decode('utf-8'))[0]
+            stdout = self.ssh.exec_command("cat /proc/meminfo")[1]
+            self.MemTotal, self.MemFree, self.MemAvailable = re.findall(
+                r"MemTotal.\s+(\d+)\skB\nMemFree.\s+(\d+)\skB\nMemAvailable.\s+(\d+)\skB\n",
+                stdout.read().decode("utf-8"),
+            )[0]
         else:
-            self.MemTotal,self.MemFree,self.MemAvailable = [None,None,None]
+            self.MemTotal, self.MemFree, self.MemAvailable = [None, None, None]
             raise
 
     def cpu_info(self):
-        '''
+        """
             vmstat 1 1 | tail -n 1 的返回值按照顺序排序
             us: 用户进程执行消耗cpu时间(user time)
             sy: 系统进程消耗cpu时间(system time)
             id: 空闲时间(包括IO等待时间)
-            # CPU% = 1 – idleTime / sysTime * 100      
-        '''
+            # CPU% = 1 – idleTime / sysTime * 100
+        """
         if self.ssh:
-            stdout = self.ssh.exec_command("vmstat 1 1 | tail -n 1", )[1]
-            #用户空间上进程运行的时间百分比,内核空间上进程运行的时间百分比,闲置时间百分比
-            self.cpu_user,self.cpu_sys,self.cpu_idle =stdout.readlines()[0].split()[12:15] 
+            stdout = self.ssh.exec_command("vmstat 1 1 | tail -n 1")[1]
+            # 用户空间上进程运行的时间百分比,内核空间上进程运行的时间百分比,闲置时间百分比
+            self.cpu_user, self.cpu_sys, self.cpu_idle = stdout.readlines()[0].split()[
+                12:15
+            ]
         else:
-            self.cpu_user,self.cpu_sys,self.cpu_idle = [None,None,None]
+            self.cpu_user, self.cpu_sys, self.cpu_idle = [None, None, None]
             raise
-           
+
     def ionetwork(self):
         if self.ssh:
-            stdout = self.ssh.exec_command("cat /proc/net/dev", )[1]
-            eth0 =re.findall(r'(\d+)',stdout.read().decode('utf-8').split('\n')[4].replace('eth0',''))
+            stdout = self.ssh.exec_command("cat /proc/net/dev")[1]
+            eth0 = re.findall(
+                r"(\d+)",
+                stdout.read().decode("utf-8").split("\n")[4].replace("eth0", ""),
+            )
             self.eth0_Receive = eth0[0]
             self.eth0_Transmit = eth0[8]
         else:
-            self.eth0_Receive,self.eth0_Transmit = [None,None]
+            self.eth0_Receive, self.eth0_Transmit = [None, None]
             raise
-           
-       
 
 
-
-    
-
-
-if  __name__ =="__main__":
-    a = VpsService('a')
-    a.ionetwork()
+if __name__ == "__main__":
+    pass
