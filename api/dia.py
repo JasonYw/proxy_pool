@@ -1,7 +1,7 @@
 from mail import send_mail
 import time
 from models import BaseStr as redis_
-from models import VpsConfigModel, PackageConfig
+from models import VpsConfigModel, PackageConfig, PackageVpsConfig
 from vps import VpsService
 import requests
 import configparser
@@ -17,14 +17,53 @@ PROXY_SERVICE_PASSWORD = config["PROXY"]["PROXY_SERVICE_PASSWORD"]
 session = requests.Session()
 
 
-def find_package_by_ttl(ttl_):
-    for i in PackageConfig.list_all_package():
-        if ttl_ > i.get("ip_vaild_min") and ttl_ < i.get("ip_vaild_max"):
-            yield i.get("package_name"), True
-        elif not i.get("ip_vaild_min") and not i.get("ip_vaild_max"):
-            yield i.get("package_name"), True
-        else:
-            yield i.get("package_name"), False
+def make_pool(vps_uuid):
+    package_namelist = PackageVpsConfig.list_all_package(vps_uuid)
+    if not VpsConfigModel.can_share(vps_uuid):
+        for package_name in package_namelist:
+            is_need_to_set_pool(
+                PackageConfig.find_package_by_packagename(package_name), vps_uuid
+            )
+    else:
+        for package_name in package_namelist:
+            is_need_to_set_pool(
+                PackageConfig.find_package_by_packagename(package_name), vps_uuid
+            )
+        for package_config in PackageConfig.list_all_package(private=False):
+            is_need_to_set_pool(package_config, vps_uuid)
+
+
+def is_need_to_set_pool(package_config, vps_uuid):
+    if package_config["ip_vaild_min"] and package_config["ip_vaild_max"]:
+        if (
+            redis_.ttl_(f"vps_{vps_uuid}") > package_config["ip_vaild_min"]
+            and redis_.ttl_(f"vps_{vps_uuid}") < package_config["ip_vaild_max"]
+        ):
+            redis_.set_(
+                f'{package_config["package_name"]}_{vps_uuid}',
+                redis_.get_(f"vps_{vps_uuid}"),
+                redis_.ttl_(f"vps_{vps_uuid}"),
+            )
+    elif package_config["ip_vaild_min"]:
+        if redis_.ttl_(f"vps_{vps_uuid}") > package_config["ip_vaild_min"]:
+            redis_.set_(
+                f'{package_config["package_name"]}_{vps_uuid}',
+                redis_.get_(f"vps_{vps_uuid}"),
+                redis_.ttl_(f"vps_{vps_uuid}"),
+            )
+    elif package_config["ip_vaild_max"]:
+        if redis_.ttl_(f"vps_{vps_uuid}") < package_config["ip_vaild_min"]:
+            redis_.set_(
+                f'{package_config["package_name"]}_{vps_uuid}',
+                redis_.get_(f"vps_{vps_uuid}"),
+                redis_.ttl_(f"vps_{vps_uuid}"),
+            )
+    else:
+        redis_.set_(
+            f'{package_config["package_name"]}_{vps_uuid}',
+            redis_.get_(f"vps_{vps_uuid}"),
+            redis_.ttl_(f"vps_{vps_uuid}"),
+        )
 
 
 def verify_ip(ip_):
@@ -76,12 +115,7 @@ def dia(vps_conf):
                         break
                     else:
                         continue
-        ttl_ = redis_.get_(f'vps_{vps_conf["vps_uuid"]}')
-        for x, y in find_package_by_ttl(ttl_):
-            if y:
-                redis_.set_(f'{x}_{vps_conf["vps_uuid"]}', f"{ip_}:{VPS_PORT}", ttl_)
-            else:
-                redis_.del_key(f'{x}_{vps_conf["vps_uuid"]}')
+        make_pool(vps_conf["vps_uuid"])
     return
 
 

@@ -146,22 +146,60 @@ class VpsConfigModel(BaseModel):
     @classmethod
     def update_env(cls, vps_uuid):
         cls.cursor.execute(
-            f"UPDATE {cls.__table} SET env_is_ok = true WHERE vps_uuid = {vps_uuid}"
+            f'UPDATE {cls.__table} SET env_is_ok = true WHERE vps_uuid = "{vps_uuid}"'
         )
         cls.__db.commit()
         cls.close()
+
+    @classmethod
+    def can_share(cls, vps_uuid):
+        cls.cursor.execute(
+            f'SELECT * FROM {cls.__table} WHERE SHARE AND vps_uuid="{vps_uuid}" LIMIT 1'
+        )
+        result = cls.cursor.fetchone()
+        cls.close()
+        if result:
+            return True
+        else:
+            return False
 
 
 class PackageConfig(BaseModel):
     __table = "agent_packageconfig"
 
     @classmethod
-    def list_all_package(cls):
-        results = cls.cursor.execute(f"SELECT * FROM {cls.__table}")
+    def list_all_package(cls, private):
+        if private:
+            cls.cursor.execute(f"SELECT * FROM {cls.__table} WHERE private")
+        else:
+            cls.cursor.execute(f"SELECT * FROM {cls.__table} WHERE NOT private")
+        results = cls.cursor.fetchall()
+        cls.cursor.close()
+        return results
+
+    @classmethod
+    def find_package_by_packagename(cls, package_name):
+        cls.cursor.execute(
+            f'SELECT * FROM {cls.__table} WHERE package_name="{package_name}" LIMIT 1'
+        )
+        results = cls.cursor.fetchone()
+        cls.cursor.close()
+        return results
 
 
 class PackageUserConfig(BaseModel):
     __table = "agent_package_user"
+
+
+class PackageVpsConfig(BaseModel):
+    __table = "agent_package_vps"
+
+    @classmethod
+    def list_all_package(cls, vps_uuid):
+        cls.cursor.execute(f'SELECT * FROM {cls.__table} WHERE vps_uuid = "{vps_uuid}"')
+        results = list(map(lambda x: x["package_name"], cls.cursor.fetchall()))
+        cls.cursor.close()
+        return results
 
 
 if __name__ == "__main__":

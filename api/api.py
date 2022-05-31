@@ -11,6 +11,8 @@ import os
 import configparser
 from apscheduler.schedulers.background import BackgroundScheduler
 from dia import consumer_dia
+from copy import deepcopy
+
 
 app = FastAPI()
 abspath = os.path.abspath(__file__).replace(f"/{os.path.basename(__file__)}", "")
@@ -25,6 +27,9 @@ MYSQL_PORT = config["MYSQL"]["MYSQL_PORT"]
 MYSQL_USER = config["MYSQL"]["MYSQL_USER"]
 MYSQL_PASS = config["MYSQL"]["MYSQL_PASS"]
 MYSQL_DB = config["MYSQL"]["MYSQL_DB"]
+
+
+RESPONSE_RESULT = {"state": 200, "data": []}
 
 
 @app.on_event("startup")
@@ -105,6 +110,101 @@ async def auth_daily_count(request, username, userinfo, userdata):
             return True
 
 
+async def auth_by_mysql(request: Request, userinfo, password: str):
+    cur = await request.state.pool.cursor(aiomysql.DictCursor)
+    await cur.execute(
+        f'SELECT * FROM agent_userconfig WHERE username="{userinfo[0]}" AND password="{password}" LIMIT 1'
+    )
+    userconfig = await cur.fetchone()
+    await cur.execute(
+        f'SELECT * FROM agent_package_user WHERE username="{userinfo[0]}" AND id={userinfo[2]} LIMIT 1'
+    )
+    package_user = await cur.fetchone()
+    await cur.execute(
+        f'SELECT * FROM agent_packageconfig WHERE username="{userinfo[1]}" LIMIT 1'
+    )
+    packageconfig = await cur.fetchone()
+    await cur.close()
+    return userconfig, package_user, packageconfig
+
+
+async def find_package_rule(request: Request, package_name):
+    cur = await request.state.pool.cursor(aiomysql.DictCursor)
+    await cur.execute(
+        f'SELECT * FROM agent_packageconfig WHERE package_name = "{package_name}" LIMIT 1'
+    )
+    packageconfig = await cur.fetchone()
+    await cur.close()
+    return packageconfig
+
+
+async def find_vps_by_packagename(request: Request, package_name):
+    vpsuuid_list = []
+    cur = await request.state.pool.cursor(aiomysql.DictCursor)
+    await cur.execute(
+        f'SELECT * FROM agent_package_vps WHERE package_name = "{package_name}"'
+    )
+    packageconfig = await cur.fetchall()
+    await cur.close()
+    for i in packageconfig:
+        vpsuuid_list.append(i["vps_uuid"])
+    return vpsuuid_list
+
+
+async def find_vps_by_share(request: Request, share: bool):
+    vpsuuid_list = []
+    cur = await request.state.pool.cursor(aiomysql.DictCursor)
+    if share:
+        await cur.execute(f"SELECT * FROM agent_vpsconfig WHERE share")
+    else:
+        await cur.execute(f"SELECT * FROM agent_vpsconfig WHERE NOT share")
+    vpsconfig = await cur.fetchall()
+    await cur.close()
+    for i in vpsconfig:
+        vpsuuid_list.append(i["vps_uuid"])
+    return vpsuuid_list
+
+
+async def is_need_to_set_pool(request, package_config, vps_uuid):
+    if package_config["api_ip_vaild_min"] or package_config["api_ip_vaild_max"]:
+
+        ttl_ = await request.app.state.redis.ttl(f"vps_{vps_uuid}")
+        if (
+            ttl_ > package_config["api_ip_vaild_min"]
+            and ttl_ < package_config["api_ip_vaild_max"]
+        ):
+            await request.app.state.redis.set(
+                f'{package_config["package_name"]}_{vps_uuid}',
+                await request.app.state.redis.get(f"vps_{vps_uuid}"),
+                await request.app.state.redis.ttl(f"vps_{vps_uuid}"),
+            )
+    elif package_config["api_ip_vaild_min"]:
+
+        ttl_ = await request.app.state.redis.ttl(f"vps_{vps_uuid}")
+        if ttl_ > package_config["api_ip_vaild_min"]:
+            await request.app.state.redis.set(
+                f'{package_config["package_name"]}_{vps_uuid}',
+                await request.app.state.redis.get(f"vps_{vps_uuid}"),
+                await request.app.state.redis.ttl(f"vps_{vps_uuid}"),
+            )
+    elif package_config["api_ip_vaild_max"]:
+
+        ttl_ = await request.app.state.redis.ttl(f"vps_{vps_uuid}")
+        if ttl_ < package_config["api_ip_vaild_max"]:
+            await request.app.state.redis.set(
+                f'{package_config["package_name"]}_{vps_uuid}',
+                await request.app.state.redis.get(f"vps_{vps_uuid}"),
+                await request.app.state.redis.ttl(f"vps_{vps_uuid}"),
+            )
+    else:
+
+        await request.app.state.redis.set(
+            f'{package_config["package_name"]}_{vps_uuid}',
+            await request.app.state.redis.get(f"vps_{vps_uuid}"),
+            await request.app.state.redis.ttl(f"vps_{vps_uuid}"),
+        )
+
+
 async def auth_user(request: Request, username: str, password: str):
     userdata = await request.app.state.redis.hgetall(username)
     userinfo = username.split("@")  # [username,packagename,id,api\tunnel]
@@ -114,20 +214,11 @@ async def auth_user(request: Request, username: str, password: str):
     ):
         return await request.app.state.redis.hgetall(username)
     else:
-        cur = await request.state.pool.cursor(aiomysql.DictCursor)
-        await cur.execute(
-            f'SELECT * FROM agent_userconfig WHERE username="{userinfo[0]}" AND password="{password}" LIMIT 1'
+        userconfig, package_user, packageconfig = await auth_by_mysql(
+            request, userinfo, password
         )
-        userconfig = await cur.fetchone()
-        await cur.execute(
-            f'SELECT * FROM agent_package_user WHERE username="{userinfo[0]}" AND id={userinfo[2]} LIMIT 1'
-        )
-        package_user = await cur.fetchone()
-        await cur.execute(
-            f'SELECT * FROM agent_packageconfig WHERE username="{userinfo[1]}" LIMIT 1'
-        )
-        packageconfig = await cur.fetchone()
-        await cur.close()
+        if userconfig and userconfig["is_superuser"]:
+            return "superuser"
         if userconfig and package_user and packageconfig:
             if package_user.get(expired_time) != None:
                 expired_time = (
@@ -173,6 +264,8 @@ async def auth_user(request: Request, username: str, password: str):
 
 @app.get("/get_ip", response_class=JSONResponse)
 async def auth_(request: Request, username: str, password: str):
+    global RESPONSE_RESULT
+    result = deepcopy(RESPONSE_RESULT)
     package = await auth_user(request, username, password)
     if package:
         used_ip = set(
@@ -185,26 +278,56 @@ async def auth_(request: Request, username: str, password: str):
         )
         proxy_ips = set(await request.app.state.redus.megt(keyslist))
         if package.get("ip_per_api_rqs"):
-            proxy_ips = list(proxy_ips - used_ip)[: package["ip_per_api_rqs"]]
+            result["data"] = list(proxy_ips - used_ip)[: package["ip_per_api_rqs"]]
         else:
-            return random.choice(list(proxy_ips - used_ip))
+            result["data"] = [random.choice(list(proxy_ips - used_ip))]
+    return JSONResponse(result)
 
 
-@app.get("/auth_for_vps")
+@app.get("/auth_for_vps", response_class=JSONResponse)
 async def auth_(request: Request, username: str, password: str, local_ip: str):
-    package = await auth_user(request, username, password, local_ip)
-    if package:
+    global RESPONSE_RESULT
+    result = deepcopy(RESPONSE_RESULT)
+    package = await auth_user(request, username, password)
+    if isinstance(package, str):
+        pass
+    elif package:
         userinfo = username.split("@")
         if userinfo[-1] == "api":
             await request.app.state.redis.sadd(
                 f"{username}_{int(time.mktime(datetime.date.today().timetuple()))}",
                 local_ip,
             )
-            return "ok"
+            pass
         if userinfo[-1] == "tunnel":
             await request.app.state.redis.hincrby(username, "daily_ip_count", -1)
-            return "ok"
-    return None
+            pass
+    else:
+        result["state"] = 400
+    return JSONResponse(result)
+
+
+@app.get("/manage_package", response_class=JSONResponse)
+async def manage_package_(
+    request: Request, username: str, password: str, package_name: str
+):
+    global RESPONSE_RESULT
+    result = deepcopy(RESPONSE_RESULT)
+    package = await auth_user(request, username, password)
+    if isinstance(package_name, str):
+        if package["private"]:
+            for vps_uuid in await find_vps_by_packagename(request, package_name):
+                await is_need_to_set_pool(request, package, vps_uuid)
+            result["data"] = "finish"
+        else:
+            share_vpsuuid = set(await find_vps_by_share(request, False))
+            all_vpsuuid = set(await request.app.state.redis.keys(f"vps_*"))
+            for vps_uuid in list(all_vpsuuid - share_vpsuuid):
+                await is_need_to_set_pool(request, package, vps_uuid)
+            result["data"] = "finish"
+    else:
+        result["state"] = 400
+    return JSONResponse(result)
 
 
 if __name__ == "__main__":
