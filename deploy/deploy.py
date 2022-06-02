@@ -1,29 +1,23 @@
 from mail import send_mail
 import time
-from models import VpsConfigModel, VpsMonitorModel, WatchTaskList
+from models import DeployTaskList
+from models import VpsConfigModel
 from vps import VpsService
 import requests
 import configparser
 import os
 from threading import Thread
 
-abspath = os.path.abspath(__file__).replace(f"/{os.path.basename(__file__)}", "")
-config = configparser.ConfigParser()
-config.read(f"{abspath}/conf.ini")
-VPS_PORT = config["VPS"]["VPS_PORT"]
-PROXY_SERVICE_USERNAME = config["PROXY"]["PROXY_SERVICE_USERNAME"]
-PROXY_SERVICE_PASSWORD = config["PROXY"]["PROXY_SERVICE_PASSWORD"]
-session = requests.Session()
 
-
-def watch(vps_conf):
+def deploy(vps_conf):
     """
         vps 拨号服务器配置
         消费者
     """
-    vps = VpsService(vps_conf["vps_uuid"])
-    result = vps.watch()
-    VpsMonitorModel.insert_monitor(vps_conf["vps_uuid"], **result)
+    if not vps_conf["env_is_ok"]:
+        vps = VpsService(vps_conf["vps_uuid"])
+        if vps.deployment():
+            VpsConfigModel.update_env(vps_conf["vps_uuid"])
     return
 
 
@@ -34,14 +28,14 @@ def package_thread(threading_group, vps_conf):
     """
     if not threading_group.get(vps_conf["vps_uuid"]):
         threading_group[vps_conf["vps_uuid"]] = Thread(
-            name=vps_conf["vps_uuid"], target=watch, args=(vps_conf,)
+            name=vps_conf["vps_uuid"], target=deploy, args=(vps_conf,)
         )
         threading_group[vps_conf["vps_uuid"]].start()
         # logger.info(f'{vps["owner"]}_{vps["id"]} 开始拨号')
     else:
         if not threading_group[vps_conf["vps_uuid"]].isAlive():
             threading_group[vps_conf["vps_uuid"]] = Thread(
-                name=vps_conf["vps_uuid"], target=watch, args=(vps_conf,)
+                name=vps_conf["vps_uuid"], target=deploy, args=(vps_conf,)
             )
             threading_group[vps_conf["vps_uuid"]].start()
             # logger.info(f'{vps["owner"]}_{vps["id"]} 开始拨号')
@@ -50,13 +44,17 @@ def package_thread(threading_group, vps_conf):
     return
 
 
-def consumer_watch():
+def consumer_deploy():
     threading_group = {}
     while True:
-        if WatchTaskList.llen_():
-            vps_uuid = WatchTaskList.rpop_(True)
+        if DeployTaskList.llen_():
+            vps_uuid = DeployTaskList.rpop_(True)
             package_thread(
-                threading_group, VpsConfigModel.find_config_by_vpsuuid(vps_uuid)
+                threading_group, VpsConfigModel.find_config_by_vps_uuid(vps_uuid)
             )
         else:
-            WatchTaskList.push_empty_list(VpsConfigModel.list_all_vpsuuid())
+            DeployTaskList.push_empty_list(VpsConfigModel.list_all_vps_uuid())
+
+
+if __name__ == "__main__":
+    pass

@@ -1,21 +1,42 @@
 import pymysql
 import configparser
-import os
 import redis
+import os
 
 abspath = os.path.abspath(__file__).replace(f"/{os.path.basename(__file__)}", "")
 config = configparser.ConfigParser()
 config.read(f"{abspath}/conf.ini")
+
+
+REDIS_HOST = config["REDIS"]["REDIS_HOST"]
+REDIS_PORT = config["REDIS"]["REDIS_PORT"]
+REDIS_DB = config["REDIS"]["REDIS_DB"]
+REDIS_PASS = config["REDIS"]["REDIS_PASS"]
 MYSQL_HOST = config["MYSQL"]["MYSQL_HOST"]
 MYSQL_PORT = config["MYSQL"]["MYSQL_PORT"]
 MYSQL_USER = config["MYSQL"]["MYSQL_USER"]
 MYSQL_PASS = config["MYSQL"]["MYSQL_PASS"]
 MYSQL_DB = config["MYSQL"]["MYSQL_DB"]
-REDIS_HOST = config["REDIS"]["REDIS_HOST"]
-REDIS_PORT = config["REDIS"]["REDIS_PORT"]
-REDIS_DB = config["REDIS"]["REDIS_DB"]
-REDIS_PASS = config["REDIS"]["REDIS_PASS"]
 REDISPOOL = None
+
+
+def connect_mysql():
+    """
+        连接mysql
+        name：mysql名字
+        host：mysql节点ip
+        port：端口号
+        database：数据库
+        user:用户
+        password：密码
+    """
+    return pymysql.connect(
+        host=MYSQL_HOST,
+        port=int(MYSQL_PORT),
+        user=MYSQL_USER,
+        database=MYSQL_DB,
+        password=MYSQL_PASS,
+    )
 
 
 def connect_redis():
@@ -39,46 +60,6 @@ def connect_redis():
             )
         )
     return REDISPOOL
-
-
-def connect_mysql():
-    """
-        连接mysql
-        name：mysql名字
-        host：mysql节点ip
-        port：端口号
-        database：数据库
-        user:用户
-        password：密码
-    """
-    return pymysql.connect(
-        host=MYSQL_HOST,
-        port=int(MYSQL_PORT),
-        user=MYSQL_USER,
-        database=MYSQL_DB,
-        password=MYSQL_PASS,
-    )
-
-
-class BaseModel:
-    """
-        封装mysql常用函数
-    """
-
-    __db = connect_mysql()
-    __table = ""
-    cursor = __db.cursor(pymysql.cursors.DictCursor)
-
-    @classmethod
-    def close(cls):
-        try:
-            cls.cursor.close()
-        except:
-            pass
-        try:
-            cls.__db.close()
-        except:
-            pass
 
 
 class BaseList:
@@ -140,8 +121,29 @@ class BaseList:
                     return None
 
 
-class WatchTaskList(BaseList):
-    __key = "proxy_watch_task_list"
+class DeployTaskList(BaseList):
+    __key = "proxy_deploy_task_list"
+
+
+class BaseModel:
+    """
+        封装mysql常用函数
+    """
+
+    __db = connect_mysql()
+    __table = ""
+    cursor = __db.cursor(pymysql.cursors.DictCursor)
+
+    @classmethod
+    def close(cls):
+        try:
+            cls.cursor.close()
+        except:
+            pass
+        try:
+            cls.__db.close()
+        except:
+            pass
 
 
 class VpsConfigModel(BaseModel):
@@ -149,42 +151,28 @@ class VpsConfigModel(BaseModel):
         存储拨号机的配置信息
     """
 
-    __table = "service_vpsconfig"
+    __table = "agent_vpsconfig"
 
     @classmethod
-    def list_all_vpsuuid(cls):
-        cls.cursor.execute(f"SELECT vps_uuid FROM {cls.__table}")
+    def find_config_by_vps_uuid(cls, vpd_uuid):
+        cls.cursor.execute(
+            f'SELECT * FROM {cls.__table} WHERE vps_uuid="{vpd_uuid}" AND NOT env_is_ok LIMIT 1'
+        )
+        result = cls.cursor.fetchone()
+        cls.close()
+        return result
+
+    @classmethod
+    def list_all_vps_uuid(cls):
+        cls.cursor.execute(f"SELECT vps_uuid FROM {cls.__table} WHERE NOT env_is_ok")
         results = list(map(lambda x: x["vps_uuid"], cls.cursor.fetchall()))
         cls.close()
         return results
 
     @classmethod
-    def find_config_by_vpsuuid(cls, vps_uuid):
-        cls.cursor.execute(f"SELECT * FROM {cls.__table} WHERE vps_uuid ='{vps_uuid}'")
-        results = cls.cursor.fetchone()
-        cls.close()
-        return results
-
-
-class VpsMonitorModel(BaseModel):
-    __table = "service_vpsmonitor"
-
-    @classmethod
-    def insert_monitor(
-        cls,
-        vps_uuid,
-        alive,
-        MemTotal,
-        MemFree,
-        MemAvailable,
-        cpu_user,
-        cpu_sys,
-        cpu_idle,
-        eth0_Receive,
-        eth0_Transmit,
-    ):
+    def update_env(cls, vps_uuid):
         cls.cursor.execute(
-            f"INSERT INTO {cls.__table} SET alive = {alive}, MemTotal = {MemTotal}, MemFree = {MemFree},MemAvailable = {MemAvailable}, cpu_user={cpu_user}, cpu_sys= {cpu_sys},cpu_idle = {cpu_idle},eth0_Receive={eth0_Receive},eth0_Transmit ={eth0_Transmit},vps_uuid = {vps_uuid}"
+            f'UPDATE {cls.__table} SET env_is_ok = true WHERE vps_uuid = "{vps_uuid}"'
         )
         cls.__db.commit()
         cls.close()

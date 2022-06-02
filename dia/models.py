@@ -105,6 +105,69 @@ class BaseStr:
         return len(cls.db.keys(key))
 
 
+class BaseList:
+    """
+        对于redis为list封装
+    """
+
+    db = connect_redis()
+    __key = None
+    __lock = f"{__key}_lock"
+
+    @classmethod
+    def lpush_(cls, data):
+        return cls.db.lpush(cls.__key, data)
+
+    @classmethod
+    def lpop_(cls, lrem_=False):
+        if lrem_:
+            while True:
+                if cls.db.incr(cls.__lock) == 1:
+                    result = cls.db.lpop(cls.__key)
+                    cls.db.lrem(cls.__key, 0, result)
+                    cls.db.delete(cls.__lock)
+                    break
+        else:
+            result = cls.db.lpop(cls.__key)
+        return result
+
+    @classmethod
+    def rpush_(cls, data):
+        return cls.db.rpush(cls.__key, data)
+
+    @classmethod
+    def rpop_(cls, lrem_=False):
+        if lrem_:
+            while True:
+                if cls.db.incr(cls.__lock) == 1:
+                    result = cls.db.rpop(cls.__key)
+                    cls.db.lrem(cls.__key, 0, result)
+                    cls.db.delete(cls.__lock)
+                    break
+        else:
+            result = cls.db.rpop(cls.__key)
+        return result
+
+    @classmethod
+    def llen_(cls):
+        return cls.db.llen(cls.__key)
+
+    @classmethod
+    def push_empty_list(cls, list_):
+        if isinstance(list_, list):
+            while True:
+                if cls.db.incr(cls.__lock) == 1:
+                    if not cls.llen_():
+                        for i in list_:
+                            cls.lpush_(i)
+                    cls.db.delete(cls.__lock)
+                    return None
+
+
+class DiaTaskList(BaseList):
+    __key = "proxy_dia_task_list"
+
+
 class BaseModel:
     """
         封装mysql常用函数
@@ -134,22 +197,20 @@ class VpsConfigModel(BaseModel):
     __table = "agent_vpsconfig"
 
     @classmethod
-    def list_all_vps_by_env_is(cls, env_is):
-        if env_is:
-            cls.cursor.execute(f"SELECT * FROM {cls.__table} WHERE env_is_ok")
-        else:
-            cls.cursor.execute(f"SELECT * FROM {cls.__table} WHERE not env_is_ok")
-        results = cls.cursor.fetchall()
+    def find_config_by_vps_uuid(cls, vpd_uuid):
+        cls.cursor.execute(
+            f'SELECT * FROM {cls.__table} WHERE vps_uuid="{vpd_uuid}" AND env_is_ok LIMIT 1'
+        )
+        result = cls.cursor.fetchone()
         cls.close()
-        return results
+        return result
 
     @classmethod
-    def update_env(cls, vps_uuid):
-        cls.cursor.execute(
-            f'UPDATE {cls.__table} SET env_is_ok = true WHERE vps_uuid = "{vps_uuid}"'
-        )
-        cls.__db.commit()
+    def list_all_vps_uuid(cls):
+        cls.cursor.execute(f"SELECT vps_uuid FROM {cls.__table} WHERE env_is_ok")
+        results = list(map(lambda x: x["vps_uuid"], cls.cursor.fetchall()))
         cls.close()
+        return results
 
     @classmethod
     def can_share(cls, vps_uuid):
@@ -200,7 +261,3 @@ class PackageVpsConfig(BaseModel):
         results = list(map(lambda x: x["package_name"], cls.cursor.fetchall()))
         cls.cursor.close()
         return results
-
-
-if __name__ == "__main__":
-    pass

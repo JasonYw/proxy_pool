@@ -1,6 +1,6 @@
 from mail import send_mail
 import time
-from models import BaseStr as redis_
+from models import BaseStr as redis_, DiaTaskList
 from models import VpsConfigModel, PackageConfig, PackageVpsConfig
 from vps import VpsService
 import requests
@@ -86,11 +86,6 @@ def dia(vps_conf):
         消费者
     """
     ttl_ = redis_.ttl(f'vps_{vps_conf["vps_uuid"]}')
-    if not vps_conf["env_is_ok"]:
-        vps = VpsService(vps_conf["vps_uuid"])
-        if vps.deployment():
-            VpsConfigModel.update_env(vps_conf["vps_uuid"])
-            vps_conf["env_is_ok"] = True
     if vps_conf["expired_time"] and vps_conf["env_is_ok"]:
         if ttl_ < 30 and ttl_ != -2 and ttl_ != -1:
             if len(redis_.keys("vps_")) < 2:
@@ -145,13 +140,10 @@ def package_thread(threading_group, vps_conf):
 def consumer_dia():
     threading_group = {}
     while True:
-        allconfig = VpsConfigModel.list_all_vps_by_env_is(True)
-        if not allconfig:
-            time.sleep(60)
+        if DiaTaskList.llen_():
+            vps_uuid = DiaTaskList.rpop_(True)
+            package_thread(
+                threading_group, VpsConfigModel.find_config_by_vps_uuid(vps_uuid)
+            )
         else:
-            for vps_conf in allconfig:
-                package_thread(threading_group, vps_conf)
-
-
-if __name__ == "__main__":
-    pass
+            DiaTaskList.push_empty_list(VpsConfigModel.list_all_vps_uuid())
