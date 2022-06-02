@@ -61,7 +61,54 @@ async def shutdown_event():
     # SCHED.shutdown()
 
 
-####################################################################
+"""
+    封装redis，mysql
+"""
+
+
+async def r_hset(request, key, value):
+    return await request.app.state.redis.hset(key, *value)
+
+
+async def r_exists(request, key):
+    return await request.app.state.redis.r_exists(key)
+
+
+async def r_hgetall(request, key):
+    return await request.app.state.redis.hgetall(key)
+
+
+async def r_get(request, key):
+    return await request.app.state.redis.get(key)
+
+
+async def r_ttl(request, key):
+    await request.app.state.redis.ttl(key)
+
+
+async def r_scard(request, key):
+    await request.app.state.redis.r_scard(key)
+
+
+async def r_sadd(request, key, value):
+    await request.app.state.redis.sadd(key, value)
+
+
+async def m_find_one(request, sql_):
+    cur = await request.state.pool.cursor(aiomysql.DictCursor)
+    await cur.execute(sql_)
+    result = await cur.fetchone()
+    await cur.close()
+    return result
+
+
+async def m_find_all(request, sql_):
+    cur = await request.state.pool.cursor(aiomysql.DictCursor)
+    await cur.execute(sql_)
+    result = await cur.fetchall()
+    await cur.close()
+    return result
+
 
 """
     处理验证
@@ -78,6 +125,7 @@ def auth_expired_time(request, userdata):
 
 
 async def auth_daily_count(request, username, userinfo, userdata):
+    time.mktime(datetime.date.today().timetuple())
     if userinfo[-1] == "tunnel":
         if isinstance(userdata.get("now_day"), int):
             if userdata.get("now_day") < int(
@@ -122,10 +170,6 @@ async def auth_by_redis(request: Request, username, password, userinfo):
 async def auth_by_mysql(request: Request, userinfo, password: str):
     cur = await request.state.pool.cursor(aiomysql.DictCursor)
     await cur.execute(
-        f'SELECT * FROM agent_userconfig WHERE username="{userinfo[0]}" AND password="{password}" LIMIT 1'
-    )
-    userconfig = await cur.fetchone()
-    await cur.execute(
         f'SELECT * FROM agent_package_user WHERE username="{userinfo[0]}" AND id={userinfo[2]} LIMIT 1'
     )
     package_user = await cur.fetchone()
@@ -134,87 +178,88 @@ async def auth_by_mysql(request: Request, userinfo, password: str):
     )
     packageconfig = await cur.fetchone()
     await cur.close()
-    return userconfig, package_user, packageconfig
+    return package_user, packageconfig
+
+
+async def auth_username_password(request, username, password):
+    if request.app.state.redis.get(username) == password:
+        return True
+    else:
+        cur = await request.state.pool.cursor(aiomysql.DictCursor)
+        result = await cur.execute(
+            f'SELECT * FROM agent_userconfig WHERE username="{username}" AND password="{password}" LIMIT 1'
+        )
+        await cur.close()
+        if result:
+            await request.state.redis.set(username, password)
+            return True
+        else:
+            return False
+
+
+"""
+ip_per_api_rqs
+ip_per_day
+ip_per_package
+tunnel_per_day
+tunnel_per_package
+private
+create_time
+package_name
+api_duplicate_time
+
+"""
+
+
+async def auth_api_package_byredis(request, username, packagename, id):
+    today = time.mktime(datetime.date.today().timetuple())
+    daily_key = f"{username}&{packagename}&{id}&{today}"
+    package_key = f"{username}&{packagename}&{id}"
+    package = await r_hgetall(packagename)
+    rule = {"ip_per_day": daily_key, "ip_per_package": package_key}
+    if package:
+        for i, j in rule.items():
+            if isinstance(package.get(i), int):
+                if r_exists(request, j):
+                    if await r_scard(request, j) > package[i]:
+                        return False
+                else:
+                    result = await m_find_all(
+                        request,
+                        f'SELECT * FROM agent_userrecord WHERE user_package_id ="{j}"',
+                    )
+                    if result:
+                        for i in result:
+                            r_sadd(j, i["ip"])
+                        if len(result) > package[i]:
+                            return False
+    else:
+        result = await m_find_one(
+            f'SELECT * FROM agent_packageconfig WHERE package_name ="{packagename}" LIMIT 1'
+        )
+        if not result:
+            return False
+        else:
+            config = []
+            for i, j in result.items():
+                config.append(i)
+                config.append(j)
+            await r_hset(request, packagename, tuple(config))
+            return await auth_api_package_byredis(request, username, packagename, id)
+    return True
 
 
 async def auth_user(request: Request, username: str, password: str):
     userinfo = username.split("&")  # [username,packagename,id,api\tunnel]
-    auth_ = await auth_by_redis(request, username, password, userinfo)
-    if auth_:
-        return auth_
-    else:
-        userconfig, package_user, packageconfig = await auth_by_mysql(
-            request, userinfo, password
-        )
-        if userconfig and userconfig["is_superuser"]:
-            return "superuser"
-        if userconfig and package_user and packageconfig:
-            if package_user.get(expired_time) != None:
-                expired_time = (
-                    time.mktime(package_user.get("expired_time").timetuple()) + 28800
-                )
-                if expired_time > time.time():
-                    await request.app.state.redis.hset(
-                        username, "expired_time", int(expired_time)
-                    )
-            else:
-                await request.app.state.redis.hset(username, "password", password)
-                if userinfo[3] == "api":
-                    for i in [
-                        "ip_per_api_rqs",
-                        "ip_per_day",
-                        "ip_vaild_min",
-                        "ip_vaild_max",
-                        "ip_per_package",
-                    ]:
-                        if packageconfig.get(i):
-                            await request.app.state.redis.hset(
-                                username, i, packageconfig[i]
-                            )
-                    return await request.app.state.redis.hgetall(username)
-                if userinfo[3] == "tunnel":
-                    for i in ["tunnel_per_day", "tunnel_per_package"]:
-                        if packageconfig.get(i):
-                            await request.app.state.redis.hset(
-                                username, i, packageconfig[i]
-                            )
-                        if i == "tunnel_per_day":
-                            if packageconfig[i]:
-                                await request.app.state.redis.hset(
-                                    username,
-                                    "daily_rqs_count",
-                                    packageconfig[i],
-                                    "now_day",
-                                    int(time.mktime(datetime.date.today().timetuple())),
-                                )
-                    return await request.app.state.redis.hgetall(username)
-    return None
 
 
 @app.get("/auth_for_vps", response_class=JSONResponse)
 async def auth_(request: Request, username: str, password: str, local_ip: str):
     global RESPONSE_RESULT
     result = deepcopy(RESPONSE_RESULT)
-    package = await auth_user(request, username, password)
-    if isinstance(package, str):
-        pass
-    elif package:
-        userinfo = username.split("&")
-        if userinfo[-1] == "api":
-            await request.app.state.redis.sadd(
-                f"{username}_{int(time.mktime(datetime.date.today().timetuple()))}",
-                local_ip,
-            )
-            pass
-        if userinfo[-1] == "tunnel":
-            await request.app.state.redis.hincrby(username, "daily_ip_count", -1)
-            pass
-    else:
-        result["state"] = 400
-    return JSONResponse(result)
+    pass
 
 
-####################################################################
 """
     用户提取代理api
 """
@@ -250,7 +295,6 @@ async def auth_(request: Request, username: str, password: str):
     return JSONResponse(result)
 
 
-####################################################################
 """
     处理监听套餐变化
 """
