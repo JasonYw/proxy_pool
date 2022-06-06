@@ -66,6 +66,10 @@ async def shutdown_event():
 """
 
 
+async def r_keys(request, key):
+    return await request.app.state.redis.keys(key)
+
+
 async def r_hset(request, key, value):
     return await request.app.state.redis.hset(key, *value)
 
@@ -80,6 +84,10 @@ async def r_hgetall(request, key):
 
 async def r_get(request, key):
     return await request.app.state.redis.get(key)
+
+
+async def r_set(request, key, value):
+    return await request.app.state.redis.set(key, value)
 
 
 async def r_ttl(request, key):
@@ -115,74 +123,40 @@ async def m_find_all(request, sql_):
 """
 
 
-def auth_expired_time(request, userdata):
-    if isinstance(userdata.get("expired_time"), int):
-        if userdata.get("expired_time") > int(time.time()):
-            return True
+async def set_package_to_redis_by_mysql(request: Request, packagename: str):
+    result = await m_find_one(
+        request,
+        f'SELECT * FROM agent_packageconfig WHERE package_name ="{packagename}" LIMIT 1',
+    )
+    if not result:
         return False
     else:
+        config = []
+        for i, j in result.items():
+            config.append(i)
+            config.append(j)
+        await r_hset(request, packagename, tuple(config))
         return True
 
 
-async def auth_daily_count(request, username, userinfo, userdata):
-    time.mktime(datetime.date.today().timetuple())
-    if userinfo[-1] == "tunnel":
-        if isinstance(userdata.get("now_day"), int):
-            if userdata.get("now_day") < int(
-                time.mktime(datetime.date.today().timetuple())
-            ):
-                await request.app.state.redis.hset(
-                    username,
-                    "daily_rqs_count",
-                    userdata["tunnel_per_day"],
-                    "now_day",
-                    int(time.mktime(datetime.date.today().timetuple())),
-                )
-                return True
-            else:
-                if userdata["daily_rqs_count"]:
-                    return True
+async def auth_superuser(request, username):
+    key_ = f"superuser_{username}"
+    if await r_exists(request, key_):
+        if not await r_get(request, key_):
             return False
-        else:
-            return True
-    if userinfo[-1] == "api":
-        if isinstance(userdata["ip_per_day"], int):
-            if int(userdata["ip_per_day"]) > await request.app.state.redis.scard(
-                f"{username}_{int(time.mktime(datetime.date.today().timetuple()))}"
-            ):
-                return True
-            return False
-        else:
-            return True
-
-
-async def auth_by_redis(request: Request, username, password, userinfo):
-    userdata = await request.app.state.redis.hgetall(username)
-    if userdata and (
-        auth_expired_time(request, userdata)
-        or await auth_daily_count(request, username, userinfo, userdata)
-    ):
-        return await request.app.state.redis.hgetall(username)
     else:
-        return False
-
-
-async def auth_by_mysql(request: Request, userinfo, password: str):
-    cur = await request.state.pool.cursor(aiomysql.DictCursor)
-    await cur.execute(
-        f'SELECT * FROM agent_package_user WHERE username="{userinfo[0]}" AND id={userinfo[2]} LIMIT 1'
-    )
-    package_user = await cur.fetchone()
-    await cur.execute(
-        f'SELECT * FROM agent_packageconfig WHERE username="{userinfo[1]}" LIMIT 1'
-    )
-    packageconfig = await cur.fetchone()
-    await cur.close()
-    return package_user, packageconfig
+        result = await m_find_all(
+            request,
+            f'SELECT * FROM agent_userconfig WHERE username="{username}" LIMIT 1',
+        )
+        await r_set(request, key_, result["is_superuser"])
+        if not result["is_superuser"]:
+            return False
+    return True
 
 
 async def auth_username_password(request, username, password):
-    if request.app.state.redis.get(username) == password:
+    if await r_get(request, username) == password:
         return True
     else:
         cur = await request.state.pool.cursor(aiomysql.DictCursor)
@@ -197,67 +171,107 @@ async def auth_username_password(request, username, password):
             return False
 
 
-"""
-ip_per_api_rqs
-ip_per_day
-ip_per_package
-tunnel_per_day
-tunnel_per_package
-private
-create_time
-package_name
-api_duplicate_time
-
-"""
-
-
-async def auth_api_package_byredis(request, username, packagename, id):
-    today = time.mktime(datetime.date.today().timetuple())
-    daily_key = f"{username}&{packagename}&{id}&{today}"
-    package_key = f"{username}&{packagename}&{id}"
-    package = await r_hgetall(packagename)
-    rule = {"ip_per_day": daily_key, "ip_per_package": package_key}
-    if package:
-        for i, j in rule.items():
-            if isinstance(package.get(i), int):
-                if r_exists(request, j):
-                    if await r_scard(request, j) > package[i]:
-                        return False
-                else:
-                    result = await m_find_all(
-                        request,
-                        f'SELECT * FROM agent_userrecord WHERE user_package_id ="{j}"',
-                    )
-                    if result:
-                        for i in result:
-                            r_sadd(j, i["ip"])
-                        if len(result) > package[i]:
-                            return False
+async def auth_expired_time(request, username, packagename, id):
+    key_ = f"{username}&{packagename}&{id}&expired_time"
+    if await r_exists(request, key_):
+        if isinstance(await r_get(request, key_), int):
+            if await r_get(request, key_) < int(time.time()):
+                return False
     else:
-        result = await m_find_one(
-            f'SELECT * FROM agent_packageconfig WHERE package_name ="{packagename}" LIMIT 1'
+        result = await m_find_all(
+            request,
+            f'SELECT * FROM agent_packageuser WHERE username="{username}" AND packagename="{packagename}" AND id={id} LIMIT 1',
         )
-        if not result:
+        await r_set(request, key_, result["expired_time"])
+        if result["expired_time"] < int(time.time()):
             return False
-        else:
-            config = []
-            for i, j in result.items():
-                config.append(i)
-                config.append(j)
-            await r_hset(request, packagename, tuple(config))
-            return await auth_api_package_byredis(request, username, packagename, id)
+    return True
+
+
+async def auth_api_package(request, username, packagename, id):
+    today = time.mktime(datetime.date.today().timetuple())
+    package = await r_hgetall(request, packagename)
+    rule = {
+        "ip_per_day": f"{username}&{packagename}&{id}&ip_per_{today}",
+        "ip_per_package": f"{username}&{packagename}&{id}&ip_per_package",
+    }
+    for i, j in rule.items():
+        if isinstance(package.get(i), int):
+            if await r_exists(request, j):
+                if len(await r_scard(request, j)) > package[i]:
+                    return False
+            else:
+                result = await m_find_all(
+                    request,
+                    f'SELECT * FROM agent_userrecord WHERE user_package_key ="{j}"',
+                )
+                if result:
+                    for i in result:
+                        await r_sadd(request, j, i["ip"])
+                    if len(result) > package[i]:
+                        return False
+    return True
+
+
+async def auth_tunnel_package(request, username, packagename, id):
+    today = time.mktime(datetime.date.today().timetuple())
+    package = await r_hgetall(packagename)
+    rule = {
+        "tunnel_per_day": f"{username}&{packagename}&{id}&tunnel_per_{today}",
+        "tunnel_per_package": f"{username}&{packagename}&{id}&tunnel_per_package",
+    }
+    for i, j in rule.items():
+        if isinstance(package.get(i), int):
+            if await r_exists(request, j):
+                if await r_get(request, j) > package[i]:
+                    return False
+            else:
+                result = await m_find_one(
+                    request,
+                    f'SELECT * FROM agent_userrecord WHERE user_package_key ="{j}" LIMIT 1',
+                )
+                if result:
+                    await r_set(request, j, result["count"])
+                    if result["count"] > package[i]:
+                        return False
     return True
 
 
 async def auth_user(request: Request, username: str, password: str):
-    userinfo = username.split("&")  # [username,packagename,id,api\tunnel]
+    username, packagename, id_, kind = username.split(
+        "&"
+    )  # [username,packagename,id,api\tunnel]
+    package = await r_hgetall(packagename)
+    if not await auth_username_password(request, username, password):
+        return False
+    if await auth_superuser(request, username):
+        return True
+    if not package:
+        if not await set_package_to_redis_by_mysql(request, packagename):
+            return False
+    if not await auth_expired_time(request, username, packagename, id_):
+        return False
+    if kind == "api":
+        if await auth_api_package(request, username, packagename, id_):
+            return False
+    elif kind == "tunnel":
+        if await auth_tunnel_package(request, username, packagename, id_):
+            return False
+    else:
+        return False
+    return True
 
 
 @app.get("/auth_for_vps", response_class=JSONResponse)
 async def auth_(request: Request, username: str, password: str, local_ip: str):
     global RESPONSE_RESULT
     result = deepcopy(RESPONSE_RESULT)
-    pass
+    if not await auth_user(request, username, password):
+        result["data"] = "验证失败"
+        result["state"] = 400
+    else:
+        result["data"] = "验证成功"
+    return JSONResponse(result)
 
 
 """
@@ -266,33 +280,33 @@ async def auth_(request: Request, username: str, password: str, local_ip: str):
 
 
 async def ttl_(request, key_, min, max):
-    ttl_ = await request.app.state.redis.get(key_)
+    ttl_ = await r_ttl(request, key_)
     if ttl_ > min and ttl_ < max:
         return ttl_
     else:
         return False
 
 
-@app.get("/get_ip", response_class=JSONResponse)
-async def auth_(request: Request, username: str, password: str):
-    global RESPONSE_RESULT
-    result = deepcopy(RESPONSE_RESULT)
-    package = await auth_user(request, username, password)
-    if package:
-        used_ip = set(
-            await request.app.state.redis.smembers(
-                f"{username}_{int(time.mktime(datetime.date.today().timetuple()))}"
-            )
-        )
-        keyslist = tuple(
-            await request.app.state.redis.keys(f'{username.split("&")[1]}')
-        )
-        proxy_ips = set(await request.app.state.redus.megt(keyslist))
-        if package.get("ip_per_api_rqs"):
-            result["data"] = list(proxy_ips - used_ip)[: package["ip_per_api_rqs"]]
-        else:
-            result["data"] = [random.choice(list(proxy_ips - used_ip))]
-    return JSONResponse(result)
+# @app.get("/get_ip", response_class=JSONResponse)
+# async def auth_(request: Request, username: str, password: str):
+#     global RESPONSE_RESULT
+#     result = deepcopy(RESPONSE_RESULT)
+#     package = await auth_user(request, username, password)
+#     if package:
+#         used_ip = set(
+#             await request.app.state.redis.smembers(
+#                 f"{username}_{int(time.mktime(datetime.date.today().timetuple()))}"
+#             )
+#         )
+#         keyslist = tuple(
+#             await request.app.state.redis.keys(f'{username.split("&")[1]}')
+#         )
+#         proxy_ips = set(await request.app.state.redus.megt(keyslist))
+#         if package.get("ip_per_api_rqs"):
+#             result["data"] = list(proxy_ips - used_ip)[: package["ip_per_api_rqs"]]
+#         else:
+#             result["data"] = [random.choice(list(proxy_ips - used_ip))]
+#     return JSONResponse(result)
 
 
 """
@@ -301,23 +315,18 @@ async def auth_(request: Request, username: str, password: str):
 
 
 async def find_package_rule(request: Request, package_name):
-    cur = await request.state.pool.cursor(aiomysql.DictCursor)
-    await cur.execute(
-        f'SELECT * FROM agent_packageconfig WHERE package_name = "{package_name}" LIMIT 1'
+    packageconfig = await m_find_one(
+        request,
+        f'SELECT * FROM agent_packageconfig WHERE package_name = "{package_name}" LIMIT 1',
     )
-    packageconfig = await cur.fetchone()
-    await cur.close()
     return packageconfig
 
 
 async def find_vps_by_packagename(request: Request, package_name):
     vpsuuid_list = []
-    cur = await request.state.pool.cursor(aiomysql.DictCursor)
-    await cur.execute(
-        f'SELECT * FROM agent_package_vps WHERE package_name = "{package_name}"'
+    packageconfig = await m_find_all(
+        request, f'SELECT * FROM agent_packagevps WHERE package_name = "{package_name}"'
     )
-    packageconfig = await cur.fetchall()
-    await cur.close()
     for i in packageconfig:
         vpsuuid_list.append(i["vps_uuid"])
     return vpsuuid_list
@@ -325,13 +334,14 @@ async def find_vps_by_packagename(request: Request, package_name):
 
 async def find_vps_by_share(request: Request, share: bool):
     vpsuuid_list = []
-    cur = await request.state.pool.cursor(aiomysql.DictCursor)
     if share:
-        await cur.execute(f"SELECT * FROM agent_vpsconfig WHERE share")
+        vpsconfig = await m_find_all(
+            request, f"SELECT * FROM agent_vpsconfig WHERE share"
+        )
     else:
-        await cur.execute(f"SELECT * FROM agent_vpsconfig WHERE NOT share")
-    vpsconfig = await cur.fetchall()
-    await cur.close()
+        vpsconfig = await m_find_all(
+            request, f"SELECT * FROM agent_vpsconfig WHERE NOT share"
+        )
     for i in vpsconfig:
         vpsuuid_list.append(i["vps_uuid"])
     return vpsuuid_list
@@ -340,40 +350,44 @@ async def find_vps_by_share(request: Request, share: bool):
 async def is_need_to_set_pool(request, package_config, vps_uuid):
     if package_config["api_ip_vaild_min"] or package_config["api_ip_vaild_max"]:
 
-        ttl_ = await request.app.state.redis.ttl(f"vps_{vps_uuid}")
+        ttl_ = await r_ttl(request, f"vps_{vps_uuid}")
         if (
             ttl_ > package_config["api_ip_vaild_min"]
             and ttl_ < package_config["api_ip_vaild_max"]
         ):
-            await request.app.state.redis.set(
+            await r_set(
+                request,
                 f'{package_config["package_name"]}_{vps_uuid}',
-                await request.app.state.redis.get(f"vps_{vps_uuid}"),
-                await request.app.state.redis.ttl(f"vps_{vps_uuid}"),
+                await r_get(request, f"vps_{vps_uuid}"),
+                await r_ttl(request, f"vps_{vps_uuid}"),
             )
     elif package_config["api_ip_vaild_min"]:
 
-        ttl_ = await request.app.state.redis.ttl(f"vps_{vps_uuid}")
+        ttl_ = await r_ttl(request, f"vps_{vps_uuid}")
         if ttl_ > package_config["api_ip_vaild_min"]:
-            await request.app.state.redis.set(
+            await r_set(
+                request,
                 f'{package_config["package_name"]}_{vps_uuid}',
-                await request.app.state.redis.get(f"vps_{vps_uuid}"),
-                await request.app.state.redis.ttl(f"vps_{vps_uuid}"),
+                await r_get(request, f"vps_{vps_uuid}"),
+                await r_ttl(request, f"vps_{vps_uuid}"),
             )
     elif package_config["api_ip_vaild_max"]:
 
-        ttl_ = await request.app.state.redis.ttl(f"vps_{vps_uuid}")
+        ttl_ = await r_ttl(request, f"vps_{vps_uuid}")
         if ttl_ < package_config["api_ip_vaild_max"]:
-            await request.app.state.redis.set(
+            await r_set(
+                request,
                 f'{package_config["package_name"]}_{vps_uuid}',
-                await request.app.state.redis.get(f"vps_{vps_uuid}"),
-                await request.app.state.redis.ttl(f"vps_{vps_uuid}"),
+                await r_get(request, f"vps_{vps_uuid}"),
+                await r_ttl(request, f"vps_{vps_uuid}"),
             )
     else:
 
-        await request.app.state.redis.set(
+        await r_set(
+            request,
             f'{package_config["package_name"]}_{vps_uuid}',
-            await request.app.state.redis.get(f"vps_{vps_uuid}"),
-            await request.app.state.redis.ttl(f"vps_{vps_uuid}"),
+            await r_get(request, f"vps_{vps_uuid}"),
+            await r_ttl(request, f"vps_{vps_uuid}"),
         )
 
 
@@ -391,7 +405,7 @@ async def manage_package_(
             result["data"] = "finish"
         else:
             share_vpsuuid = set(await find_vps_by_share(request, False))
-            all_vpsuuid = set(await request.app.state.redis.keys(f"vps_*"))
+            all_vpsuuid = set(await r_keys(request, f"vps_*"))
             for vps_uuid in list(all_vpsuuid - share_vpsuuid):
                 await is_need_to_set_pool(request, package, vps_uuid)
             result["data"] = "finish"
